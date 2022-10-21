@@ -3,7 +3,8 @@ import sys
 import time
 from datetime import datetime
 from paramiko import SSHClient
-from scp import SCPClient
+from paramiko.ssh_exception import SSHException
+from scp import SCPClient, SCPException
 from config import *
 
 
@@ -26,16 +27,17 @@ def open_files():
     for path in paths:
         if os.path.isdir(path):
             for file in get_all_files_in_dir(path):
-                os.system('open ' + file)
+                os.startfile(file)
         else:
-            os.system('open ' + path)
+            os.startfile(path)
 
 
 def get_all_files_in_dir(path):
     results = []
     for root, dirs, files in os.walk(path):
-        for f in files:
-            results.append(os.path.join(root, f))
+        for file in files:
+            if not str(file).startswith('.'):
+                results.append(os.path.join(root, file))
     return results
 
 
@@ -51,8 +53,17 @@ def get_changed_files(path):
     return changed_files
 
 
+def execute_commands():
+    for command in commands:
+        stdin, stdout, stderr = ssh.exec_command(command)
+        err = [line for line in stderr]
+        if len(err) > 0:
+            print('Команда "' + command + '" завершилась с ошибкой:')
+            for line in err:
+                print(line)
+
+
 def start_synchronization():
-    ssh = SSHClient()
     ssh.load_system_host_keys()
     try:
         ssh.connect(hostname=hostname, port=port, username=username, password=password)
@@ -68,8 +79,10 @@ def start_synchronization():
 
     print('Обновление всех файлов на сервере.')
 
+    ssh.exec_command('rm -rf ' + destination)
     for path in paths:
         scp.put(path, remote_path=destination, recursive=True)
+        execute_commands()
 
     print('Синхронизация файлов началась.')
     print('Нажмите CTRL + C для остановки.')
@@ -77,11 +90,22 @@ def start_synchronization():
     try:
         while True:
             for path in paths:
-                for file in get_changed_files(path):
-                    print('Файл "' + file[len(path):] + '" сохранен в ' +
-                          datetime.now().strftime("%H:%M:%S") + '.')
-                    scp.put(file, destination)
+                files = get_changed_files(path)
+                if len(files) == 0:
+                    continue
+                for file in files:
+                    try:
+                        name = file[len(path):]
+                        scp.put(file, destination + name)
+                        print('Файл "' + name + '" сохранен в ' +
+                              datetime.now().strftime("%H:%M:%S") + '.')
+                    except SCPException:
+                        print('Возникла ошибка при сохранении "' + path + '".')
+                execute_commands()
             time.sleep(1)
+    except SSHException:
+        print('Соединение с сервером было разорвано: выполняется повторное подключение.')
+        start_synchronization()
     except KeyboardInterrupt:
         scp.close()
         print()
@@ -90,4 +114,5 @@ def start_synchronization():
 
 if __name__ == '__main__':
     paths = filter_paths(paths)
+    ssh = SSHClient()
     start_synchronization()
